@@ -1,0 +1,14 @@
+﻿Windows Registry Editor Version 5.00
+
+[HKEY_CLASSES_ROOT\*\shell\FileCompressor]
+@="📦 Compress with FileCompressor"
+"Icon"="C:\\Users\\HP\\source\\repos\\FileCompressor-main\\bin\\Debug\\net8.0-windows\\FileCompressor.exe"
+
+[HKEY_CLASSES_ROOT\*\shell\FileCompressor\command]
+@="\"C:\\Users\\HP\\source\\repos\\FileCompressor-main\\bin\\Debug\\net8.0-windows\\FileCompressor.exe\" \"%1\""
+[HKEY_CLASSES_ROOT\Directory\shell\FileCompressor]
+@="📦 Compress with FileCompressor"
+"Icon"="C:\\Users\\HP\\source\\repos\\FileCompressor-main\\bin\\Debug\\net8.0-windows\\FileCompressor.exe"
+
+[HKEY_CLASSES_ROOT\Directory\shell\FileCompressor\command]
+@="\"C:\\Users\\HP\\source\\repos\\FileCompressor-main\\bin\\Debug\\net8.0-windows\\FileCompressor.exe\" \"%1\""
