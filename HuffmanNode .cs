@@ -45,8 +45,9 @@ namespace FileCompressor
         public long TotalOriginalSize { get; set; }
         public long TotalCompressedSize { get; set; }
     }
+
     /// <summary>
-    //  لنتحكم بالإيقاف المؤقت للعمليات
+    // لنتحكم بالإيقاف المؤقت للعمليات
     /// </summary>
     public class PauseController
     {
@@ -77,11 +78,13 @@ namespace FileCompressor
             pauseEvent?.Dispose();
         }
     }
+
     public class HuffmanCompressor
     {
         public PauseController pauseController = new PauseController();
+
         /// <summary>
-        //  لضغط الملفات وتخزينا بأرشيف واحد
+        // لضغط الملفات وتخزينها بأرشيف واحد
         /// </summary>
         public double CompressFiles(string[] inputPaths, string outputPath, BackgroundWorker worker = null, string password = null)
         {
@@ -115,25 +118,19 @@ namespace FileCompressor
                 }
             }
 
-            var compressedFiles = new CompressedFileInfo[allFiles.Count]; // نحافظ على الترتيب
+            var compressedFiles = new CompressedFileInfo[allFiles.Count];
             long totalOriginal = 0, totalCompressed = 0;
             object lockObj = new object();
-            /// <summary>
-            //  استخدام الملتي ثريد لنضغط الملفات
-            /// </summary>
-            Parallel.ForEach(Enumerable.Range(0, allFiles.Count), new ParallelOptions { MaxDegreeOfParallelism = 4 }, (i, loopState) =>
-            
+
+            Parallel.ForEach(Enumerable.Range(0, allFiles.Count), new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, (i, loopState) =>
             {
                 if (worker?.CancellationPending == true)
                 {
-                    loopState.Stop(); // توقف آمن لكل الثريدات
+                    loopState.Stop();
                     return;
                 }
 
-                //  pauseController.WaitIfPaused();
-
                 var (fullPath, relativePath) = allFiles[i];
-
                 var compressedFile = CompressSingleFile(fullPath, relativePath, worker);
 
                 lock (lockObj)
@@ -145,19 +142,17 @@ namespace FileCompressor
                     int progress = (int)(((double)(archive.Files.Count + 1) / allFiles.Count) * 100);
                     worker?.ReportProgress(progress, $"Compressing: {relativePath}");
                 }
-            }
-            );
+            });
+
             if (worker?.CancellationPending == true)
-    throw new OperationCanceledException("Compression was cancelled.");
+                throw new OperationCanceledException("Compression was cancelled.");
 
             archive.Files.AddRange(compressedFiles.Where(f => f != null));
             archive.TotalOriginalSize = totalOriginal;
             archive.TotalCompressedSize = totalCompressed;
 
             SaveArchive(archive, outputPath, password);
-            /// <summary>
-            //  لحساب نسبة الضغط
-            /// </summary>
+
             double compressionRatio = archive.TotalOriginalSize > 0
                 ? ((double)(archive.TotalOriginalSize - archive.TotalCompressedSize) / archive.TotalOriginalSize) * 100
                 : 0;
@@ -165,12 +160,15 @@ namespace FileCompressor
             worker?.ReportProgress(100, "Compression completed successfully");
             return compressionRatio;
         }
+
         /// <summary>
-        //  ضغط ملف واحد
+        // ضغط ملف واحد
         /// </summary>
         private CompressedFileInfo CompressSingleFile(string fullPath, string relativePath, BackgroundWorker worker = null)
         {
+            const int chunkSize = 10 * 1024 * 1024; // 10 MB chunks
             byte[] fileData = File.ReadAllBytes(fullPath);
+            var compressedParts = new List<byte[]>();
 
             if (fileData.Length == 0)
             {
@@ -185,75 +183,86 @@ namespace FileCompressor
                 };
             }
 
-            var frequencyTable = BuildFrequencyTable(fileData);
-            var huffmanTree = BuildHuffmanTree(frequencyTable);
+            var chunks = SplitFile(fileData, chunkSize);
             var encodingTable = new Dictionary<byte, string>();
-            GenerateEncodingTable(huffmanTree, "", encodingTable);
-            var encodedData = EncodeData(fileData, encodingTable, worker);
+            HuffmanNode huffmanTree = null;
+
+            foreach (var chunk in chunks)
+            {
+                var frequencyTable = BuildFrequencyTable(chunk);
+                huffmanTree = BuildHuffmanTree(frequencyTable);
+                encodingTable.Clear();
+                GenerateEncodingTable(huffmanTree, "", encodingTable);
+                var encodedData = EncodeData(chunk, encodingTable, worker);
+                compressedParts.Add(encodedData);
+            }
+
+            // Combine compressed parts
+            using var ms = new MemoryStream();
+            foreach (var part in compressedParts)
+            {
+                ms.Write(part, 0, part.Length);
+            }
+            var combinedData = ms.ToArray();
 
             return new CompressedFileInfo
             {
                 FileName = relativePath,
                 OriginalSize = fileData.Length,
-                CompressedSize = encodedData.Length,
-                CompressedData = encodedData,
+                CompressedSize = combinedData.Length,
+                CompressedData = combinedData,
                 EncodingTable = encodingTable,
                 HuffmanTree = huffmanTree
             };
         }
 
-        /// <summary>
-        //  جدول التكرارات لكل بايت بالبيانات 
-        /// </summary>
-        private Dictionary<byte, int> BuildFrequencyTable(byte[] data)
+        private IEnumerable<byte[]> SplitFile(byte[] data, int chunkSize)
         {
-            var frequencyTable = new Dictionary<byte, int>();
+            for (int i = 0; i < data.Length; i += chunkSize)
+            {
+                yield return data.Skip(i).Take(chunkSize).ToArray();
+            }
+        }
 
+        /// <summary>
+        // جدول التكرارات لكل بايت بالبيانات
+        /// </summary>
+        private int[] BuildFrequencyTable(byte[] data)
+        {
+            var frequencyTable = new int[256];
             foreach (byte b in data)
             {
-                if (frequencyTable.ContainsKey(b))
-                    frequencyTable[b]++;
-                else
-                    frequencyTable[b] = 1;
+                frequencyTable[b]++;
             }
-
             return frequencyTable;
         }
+
         /// <summary>
-        // بناء شجرة هافمان بناءاً على جدول التكرار
+        // بناء شجرة هافمان بناءً على جدول التكرار
         /// </summary>
-        private HuffmanNode BuildHuffmanTree(Dictionary<byte, int> frequencyTable)
+        private HuffmanNode BuildHuffmanTree(int[] frequencyTable)
         {
             var priorityQueue = new SortedSet<HuffmanNode>(new HuffmanNodeComparer());
 
-            // Create leaf nodes
-            foreach (var kvp in frequencyTable)
+            for (int i = 0; i < 256; i++)
             {
-                priorityQueue.Add(new HuffmanNode
+                if (frequencyTable[i] > 0)
                 {
-                    Value = kvp.Key,
-                    Frequency = kvp.Value
-                });
+                    priorityQueue.Add(new HuffmanNode { Value = (byte)i, Frequency = frequencyTable[i] });
+                }
             }
 
-            // Handle single character case
             if (priorityQueue.Count == 1)
             {
                 var singleNode = priorityQueue.First();
-                var root = new HuffmanNode
-                {
-                    Frequency = singleNode.Frequency,
-                    Left = singleNode
-                };
+                var root = new HuffmanNode { Frequency = singleNode.Frequency, Left = singleNode };
                 return root;
             }
 
-            // Build tree
             while (priorityQueue.Count > 1)
             {
                 var left = priorityQueue.Min;
                 priorityQueue.Remove(left);
-
                 var right = priorityQueue.Min;
                 priorityQueue.Remove(right);
 
@@ -283,51 +292,58 @@ namespace FileCompressor
             GenerateEncodingTable(node.Left, code + "0", encodingTable);
             GenerateEncodingTable(node.Right, code + "1", encodingTable);
         }
+
         /// <summary>
-        //  ضغطنا البيانات لسلسلة ثنائية مضغوطة
+        // ضغطنا البيانات لسلسلة ثنائية مضغوطة
         /// </summary>
         private byte[] EncodeData(byte[] data, Dictionary<byte, string> encodingTable, BackgroundWorker worker)
         {
-            var bitString = new StringBuilder();
+            using var memoryStream = new MemoryStream();
+            using var writer = new BinaryWriter(memoryStream);
+
+            int bitCount = 0;
+            byte currentByte = 0;
+
             for (int i = 0; i < data.Length; i++)
             {
                 if (worker?.CancellationPending == true)
                     throw new OperationCanceledException("Operation canceled by user.");
-                
 
-                bitString.Append(encodingTable[data[i]]);
-                //  if (i % 100 == 0) Thread.Sleep(100);
-            }
-
-            int padding = 8 - (bitString.Length % 8);
-            if (padding != 8)
-                bitString.Append('0', padding);
-
-            var result = new byte[bitString.Length / 8 + 1];
-            result[0] = (byte)padding;
-
-            for (int i = 0; i < bitString.Length; i += 8)
-            {   
-                if (i % 8000 == 0) // كل 1000 بايت
+                string code = encodingTable[data[i]];
+                foreach (char bit in code)
                 {
-                    pauseController.WaitIfPaused();
+                    currentByte = (byte)((currentByte << 1) | (bit - '0'));
+                    bitCount++;
+                    if (bitCount == 8)
+                    {
+                        writer.Write(currentByte);
+                        bitCount = 0;
+                        currentByte = 0;
+                    }
                 }
-
-                result[i / 8 + 1] = Convert.ToByte(bitString.ToString(i, 8), 2);
+                if (i % 8000 == 0) pauseController.WaitIfPaused();
             }
 
+            if (bitCount > 0)
+            {
+                currentByte <<= (8 - bitCount);
+                writer.Write(currentByte);
+            }
+
+            byte[] result = memoryStream.ToArray();
+            if (result.Length > 0)
+                result[0] = (byte)(8 - bitCount); // تخزين كمية الـ padding
             return result;
         }
+
         /// <summary>
-        //  الحفظ بالأرشيف + هون حفظنا خيار التشفير
+        // الحفظ بالأرشيف + هون حفظنا خيار التشفير
         /// </summary>
         private void SaveArchive(ArchiveInfo archive, string outputPath, string password = null)
         {
             using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write);
-
             var writer = new BinaryWriter(fileStream, Encoding.UTF8, leaveOpen: true);
             writer.Write("HUF1");
-
             bool isEncrypted = !string.IsNullOrEmpty(password);
             writer.Write(isEncrypted);
 
@@ -337,12 +353,9 @@ namespace FileCompressor
                 using var aes = Aes.Create();
                 aes.GenerateIV();
                 iv = aes.IV;
-
                 writer.Write(iv.Length);
                 writer.Write(iv);
-
                 writer.Flush();
-                //fileStream.Flush();
             }
 
             Stream targetStream = isEncrypted
@@ -350,7 +363,6 @@ namespace FileCompressor
                 : fileStream;
 
             using var dataWriter = new BinaryWriter(targetStream, Encoding.UTF8, leaveOpen: false);
-
             dataWriter.Write(archive.CreatedDate.ToBinary());
             dataWriter.Write(archive.TotalOriginalSize);
             dataWriter.Write(archive.TotalCompressedSize);
@@ -368,23 +380,21 @@ namespace FileCompressor
 
         private void WriteCompressedFile(BinaryWriter writer, CompressedFileInfo file)
         {
-      
             writer.Write(file.FileName);
             writer.Write(file.OriginalSize);
             writer.Write(file.CompressedSize);
-
             writer.Write(file.EncodingTable.Count);
             foreach (var kvp in file.EncodingTable)
             {
                 writer.Write(kvp.Key);
                 writer.Write(kvp.Value);
             }
-
             writer.Write(file.CompressedData.Length);
             writer.Write(file.CompressedData);
         }
+
         /// <summary>
-        //  فك ضغط أرشيف كامل
+        // فك ضغط أرشيف كامل
         /// </summary>
         public void DecompressArchive(string archivePath, string outputPath, BackgroundWorker worker = null, string password = null)
         {
@@ -397,38 +407,33 @@ namespace FileCompressor
                 pauseController.WaitIfPaused();
 
                 var file = archive.Files[i];
-                worker?.ReportProgress((i * 100) / archive.Files.Count,
-                    $"Extracting: {file.FileName}");
-
+                worker?.ReportProgress((i * 100) / archive.Files.Count, $"Extracting: {file.FileName}");
                 string outputFilePath = Path.Combine(outputPath, file.FileName);
                 DecompressSingleFile(file, outputFilePath, worker);
             }
 
             worker?.ReportProgress(100, "Decompression completed successfully");
         }
+
         /// <summary>
-        //  استخراج ملف واحد من الارشيف
+        // استخراج ملف واحد من الارشيف
         /// </summary>
         public void ExtractSingleFile(string archivePath, string fileName, string outputPath, BackgroundWorker worker = null, string password = null)
         {
             worker?.ReportProgress(0, $"Loading archive...");
-
             var archive = LoadArchive(archivePath, password);
             var file = archive.Files.FirstOrDefault(f => f.FileName == fileName);
 
             if (file == null)
                 throw new FileNotFoundException($"File '{fileName}' not found in archive");
 
-            //if (worker?.CancellationPending == true)
-            //    throw new OperationCanceledException();
-
             worker?.ReportProgress(50, $"Extracting: {fileName}");
             DecompressSingleFile(file, outputPath, worker);
-
             worker?.ReportProgress(100, "Extraction completed successfully");
         }
+
         /// <summary>
-        //  فك ضغط ملف واحد من الارشيف
+        // فك ضغط ملف واحد من الارشيف
         /// </summary>
         private void DecompressSingleFile(CompressedFileInfo file, string outputPath, BackgroundWorker worker)
         {
@@ -438,53 +443,43 @@ namespace FileCompressor
                 return;
             }
             var huffmanTree = RebuildHuffmanTree(file.EncodingTable);
-
             var decodedData = DecodeData(file.CompressedData, huffmanTree, file.OriginalSize, worker);
-
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
-
             File.WriteAllBytes(outputPath, decodedData);
         }
 
         private HuffmanNode RebuildHuffmanTree(Dictionary<byte, string> encodingTable)
         {
             var root = new HuffmanNode();
-
             foreach (var kvp in encodingTable)
             {
                 var current = root;
                 string code = kvp.Value;
-
                 for (int i = 0; i < code.Length; i++)
                 {
                     if (code[i] == '0')
                     {
-                        if (current.Left == null)
-                            current.Left = new HuffmanNode();
+                        current.Left ??= new HuffmanNode();
                         current = current.Left;
                     }
                     else
                     {
-                        if (current.Right == null)
-                            current.Right = new HuffmanNode();
+                        current.Right ??= new HuffmanNode();
                         current = current.Right;
                     }
                 }
-
                 current.Value = kvp.Key;
             }
-
             return root;
         }
+
         /// <summary>
-        //  فك البيانات من بيانات مضغوطة ل بيانات عادية اصلية
+        // فك البيانات من بيانات مضغوطة ل بيانات عادية اصلية
         /// </summary>
         private byte[] DecodeData(byte[] encodedData, HuffmanNode huffmanTree, long originalSize, BackgroundWorker worker)
         {
             if (originalSize == 0) return new byte[0];
-
             int padding = encodedData[0];
-
             var bitString = new StringBuilder();
             for (int i = 1; i < encodedData.Length; i++)
             {
@@ -492,59 +487,42 @@ namespace FileCompressor
                 {
                     if (worker?.CancellationPending == true)
                         throw new OperationCanceledException();
-
                     pauseController.WaitIfPaused();
                 }
-
                 bitString.Append(Convert.ToString(encodedData[i], 2).PadLeft(8, '0'));
             }
-
             if (padding > 0 && padding < 8)
-            {
                 bitString.Length -= padding;
-            }
-
             var decodedData = new List<byte>();
             var current = huffmanTree;
             int bitCount = 0;
             foreach (char bit in bitString.ToString())
             {
-                // التحقق من الإيقاف المؤقت كل 10000 بت
                 if (bitCount % 10000 == 0)
-                {
                     pauseController.WaitIfPaused();
-                }
                 bitCount++;
-
-                if (bit == '0')
-                    current = current.Left;
-                else
-                    current = current.Right;
-
+                current = bit == '0' ? current.Left : current.Right;
                 if (current != null && current.IsLeaf && current.Value.HasValue)
                 {
                     decodedData.Add(current.Value.Value);
                     current = huffmanTree;
-
                     if (decodedData.Count >= originalSize)
                         break;
                 }
             }
-
             return decodedData.Take((int)originalSize).ToArray();
         }
+
         /// <summary>
-        //  قراءة الارشيف
+        // قراءة الارشيف
         /// </summary>
         private ArchiveInfo LoadArchive(string archivePath, string password = null)
         {
             using var fileStream = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var reader = new BinaryReader(fileStream, Encoding.UTF8, leaveOpen: true);
-
             string signature = reader.ReadString();
             if (signature != "HUF1")
                 throw new InvalidDataException($"Invalid archive format. Signature = '{signature}'");
-
             bool isEncrypted = reader.ReadBoolean();
             byte[] iv = null;
             if (isEncrypted)
@@ -552,13 +530,10 @@ namespace FileCompressor
                 int ivLength = reader.ReadInt32();
                 iv = reader.ReadBytes(ivLength);
             }
-
-            // 2. التحقق من الباسورد
             if (isEncrypted && string.IsNullOrWhiteSpace(password))
                 throw new UnauthorizedAccessException("🔒 هذا الملف مشفر ويتطلب كلمة سر.");
             if (!isEncrypted && !string.IsNullOrWhiteSpace(password))
                 throw new InvalidOperationException("هذا الملف غير مشفر، لا حاجة لكلمة سر.");
-
             Stream sourceStream = fileStream;
             if (isEncrypted)
             {
@@ -567,18 +542,13 @@ namespace FileCompressor
                     var aes = Aes.Create();
                     var key = DeriveKey(password, aes.KeySize / 8);
                     sourceStream = new CryptoStream(fileStream, aes.CreateDecryptor(key, iv), CryptoStreamMode.Read);
-
-                    // تحقق مبدئي من صحة كلمة السر
                     using var checkReader = new BinaryReader(sourceStream, Encoding.UTF8, leaveOpen: true);
-                    DateTime.FromBinary(checkReader.ReadInt64()); 
+                    DateTime.FromBinary(checkReader.ReadInt64());
                     long totalOriginalSize = checkReader.ReadInt64();
                     long totalCompressedSize = checkReader.ReadInt64();
                     int fileCount = checkReader.ReadInt32();
-
-                    // تحقق إضافي من القيم
                     if (totalOriginalSize < 0 || totalCompressedSize < 0 || fileCount < 0)
                         throw new InvalidDataException("❌ كلمة السر غير صحيحة أو الملف تالف.");
-
                     fileStream.Position = 0;
                     reader.ReadString(); // HUF1
                     reader.ReadBoolean(); // isEncrypted
@@ -595,8 +565,6 @@ namespace FileCompressor
                     throw new InvalidDataException("❌ فشل في فك التشفير. كلمة السر غير صحيحة أو الملف تالف.", ex);
                 }
             }
-
-            // 4. قراءة أرشيف
             try
             {
                 using var dataReader = new BinaryReader(sourceStream, Encoding.UTF8);
@@ -607,13 +575,11 @@ namespace FileCompressor
                     TotalCompressedSize = dataReader.ReadInt64(),
                     Files = new List<CompressedFileInfo>()
                 };
-
                 int fileCount = dataReader.ReadInt32();
                 for (int i = 0; i < fileCount; i++)
                 {
                     archive.Files.Add(ReadCompressedFile(dataReader));
                 }
-
                 return archive;
             }
             catch (Exception ex)
@@ -621,8 +587,9 @@ namespace FileCompressor
                 throw new InvalidDataException("❌ فشل في قراءة الأرشيف. قد تكون كلمة السر غير صحيحة أو الملف تالف.", ex);
             }
         }
+
         /// <summary>
-        //  بنعمل مفتاح للتشفير من كلمة السر
+        // بنعمل مفتاح للتشفير من كلمة السر
         /// </summary>
         public static byte[] DeriveKey(string password, int keySize)
         {
@@ -631,8 +598,9 @@ namespace FileCompressor
             byte[] hash = sha256.ComputeHash(passwordBytes);
             return hash.Take(keySize).ToArray();
         }
+
         /// <summary>
-        //  قراءة ملف مضغوط واحد من الارشيف
+        // قراءة ملف مضغوط واحد من الارشيف
         /// </summary>
         private CompressedFileInfo ReadCompressedFile(BinaryReader reader)
         {
@@ -643,7 +611,6 @@ namespace FileCompressor
                 CompressedSize = reader.ReadInt64(),
                 EncodingTable = new Dictionary<byte, string>()
             };
-
             int encodingTableCount = reader.ReadInt32();
             for (int i = 0; i < encodingTableCount; i++)
             {
@@ -651,10 +618,8 @@ namespace FileCompressor
                 string value = reader.ReadString();
                 file.EncodingTable[key] = value;
             }
-
             int dataLength = reader.ReadInt32();
             file.CompressedData = reader.ReadBytes(dataLength);
-
             return file;
         }
 
@@ -673,14 +638,13 @@ namespace FileCompressor
                 if (x == null && y == null) return 0;
                 if (x == null) return -1;
                 if (y == null) return 1;
-
                 int freqComparison = x.Frequency.CompareTo(y.Frequency);
                 if (freqComparison != 0)
                     return freqComparison;
-
                 return x.GetHashCode().CompareTo(y.GetHashCode());
             }
         }
+
         public void Dispose()
         {
             pauseController?.Dispose();
